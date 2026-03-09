@@ -10,15 +10,28 @@ import com.example.taskmanager.model.enums.Role;
 import com.example.taskmanager.repository.UserRepository;
 import com.example.taskmanager.security.JwtTokenProvider;
 import com.example.taskmanager.service.interfaces.AuthService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
-// Implémentation du service d'authentification
+/**
+ * Implémentation du service d'authentification.
+ *
+ * Ce service gère :
+ * - l'inscription de nouveaux utilisateurs
+ * - la connexion d'utilisateurs existants
+ *
+ * Il utilise Spring Security pour l'authentification et
+ * JWT pour générer les tokens d'accès.
+ */
 @Service
 public class AuthServiceImpl implements AuthService {
+
+    private static final Logger logger = LoggerFactory.getLogger(AuthServiceImpl.class);
 
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
@@ -35,40 +48,52 @@ public class AuthServiceImpl implements AuthService {
         this.authenticationManager = authenticationManager;
     }
 
-    // Inscrit un nouvel utilisateur après vérification de l'email
+    /**
+     * Inscrit un nouvel utilisateur après avoir vérifié que l'email n'est pas déjà utilisé.
+     *
+     * @param request Objet contenant les informations d'inscription (nom, email, mot de passe)
+     * @return AuthResponse contenant les informations de l'utilisateur et le token JWT
+     * @throws UserAlreadyExistsException si l'email est déjà enregistré
+     */
     @Override
     public AuthResponse register(RegisterRequest request) {
 
-        // Vérifie si l'email est déjà utilisé
+        logger.info("Tentative d'inscription pour l'email: {}", request.getEmail());
+
         if (userRepository.existsByEmail(request.getEmail())) {
+            logger.warn("Échec de l'inscription : l'email {} existe déjà", request.getEmail());
             throw new UserAlreadyExistsException(request.getEmail());
         }
 
-        // Crée le nouvel utilisateur avec le mot de passe encodé
         User user = new User();
         user.setName(request.getName());
         user.setEmail(request.getEmail());
-
-        // Hash du mot de passe avant stockage en base
         user.setPassword(passwordEncoder.encode(request.getPassword()));
-
-        // Rôle par défaut pour tout nouvel utilisateur
         user.setRole(Role.ROLE_USER);
 
-        // Sauvegarde en base de données
         userRepository.save(user);
 
-        // Génère le token JWT pour l'utilisateur inscrit
+        logger.info("Utilisateur {} inscrit avec succès", user.getEmail());
+
         String token = jwtTokenProvider.generateToken(user.getEmail());
+
+        logger.debug("Token JWT généré pour l'utilisateur {} : {}", user.getEmail(), token);
 
         return UserMapper.toAuthResponse(user, token);
     }
 
-    // Connecte un utilisateur existant après vérification des credentials
+    /**
+     * Connecte un utilisateur existant après vérification de ses identifiants.
+     *
+     * @param request Objet contenant email et mot de passe
+     * @return AuthResponse avec les informations de l'utilisateur et le token JWT
+     * @throws RuntimeException si l'utilisateur n'existe pas
+     */
     @Override
     public AuthResponse login(LoginRequest request) {
 
-        // Spring Security vérifie l'email et le mot de passe
+        logger.info("Tentative de connexion pour l'email: {}", request.getEmail());
+
         Authentication authentication = authenticationManager.authenticate(
                 new UsernamePasswordAuthenticationToken(
                         request.getEmail(),
@@ -76,15 +101,19 @@ public class AuthServiceImpl implements AuthService {
                 )
         );
 
-        // Récupère l'email de l'utilisateur authentifié
         String email = authentication.getName();
 
-        // Charge l'utilisateur depuis la base de données
         User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("Utilisateur introuvable"));
+                .orElseThrow(() -> {
+                    logger.error("Utilisateur introuvable pour l'email {}", email);
+                    return new RuntimeException("Utilisateur introuvable");
+                });
 
-        // Génère le token JWT pour l'utilisateur connecté
+        logger.info("Utilisateur {} connecté avec succès", email);
+
         String token = jwtTokenProvider.generateToken(email);
+
+        logger.debug("Token JWT généré pour l'utilisateur {} : {}", email, token);
 
         return UserMapper.toAuthResponse(user, token);
     }
