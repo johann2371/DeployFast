@@ -1,0 +1,373 @@
+
+
+QUESTION 1 — CONCEPTION ARCHITECTURALE ET MODÉLISATION
+
+1. Reformulation du besoin fonctionnel
+
+Nous sommes dans le contexte d'une startup DeployFast qui souhaite industrialiser le déploiement d'une application web REST de gestion de tâches (Task Manager). Le backend est développé en Spring Boot et conteneurisé avec Docker.
+
+Les acteurs sont l'administrateur qui gère les utilisateurs et a un accès total au système, et l'utilisateur authentifié qui crée, consulte, modifie et supprime ses propres tâches.
+
+Les principales fonctionnalités sont l'inscription et la connexion avec génération d'un token JWT, le CRUD complet des tâches, la pagination et le filtrage des tâches par statut, la gestion des rôles ROLE_USER et ROLE_ADMIN, et la gestion centralisée des erreurs avec des réponses standardisées.
+
+Les contraintes techniques sont l'authentification stateless via JWT, la validation stricte des entrées avec Bean Validation, la protection contre les injections et les attaques XSS, une couverture de tests minimale de 60%, et la conteneurisation avec Docker.
+
+
+2. Modélisation des données
+Tables principales :
+Table users : id (PK, BIGINT, AUTO_INCREMENT), name (VARCHAR 100, NOT NULL), email (VARCHAR 150, NOT NULL, UNIQUE), password (VARCHAR 255, NOT NULL), role (ENUM ROLE_USER/ROLE_ADMIN, DEFAULT ROLE_USER), created_at (DATETIME), updated_at (DATETIME).
+Table tasks : id (PK, BIGINT, AUTO_INCREMENT), title (VARCHAR 255, NOT NULL), description (TEXT), status (ENUM TODO/IN_PROGRESS/DONE, DEFAULT TODO), priority (ENUM LOW/MEDIUM/HIGH, DEFAULT MEDIUM), due_date (DATE), user_id (FK vers users.id, CASCADE DELETE), created_at (DATETIME), updated_at (DATETIME).
+Relations : un User possède plusieurs Tasks (OneToMany), une Task appartient à un seul User (ManyToOne).
+Contraintes d'intégrité : email est unique et non null, title est non null, la suppression d'un utilisateur entraîne la suppression en cascade de toutes ses tâches.
+
+3. Structure REST de l'API
+Routes principales :
+POST /api/v1/auth/register — inscription, pas d'authentification requise, retourne 201.
+POST /api/v1/auth/login — connexion et obtention du token JWT, retourne 200.
+GET /api/v1/tasks — liste paginée des tâches de l'utilisateur connecté, retourne 200.
+POST /api/v1/tasks — créer une tâche, retourne 201.
+GET /api/v1/tasks/{id} — détail d'une tâche, retourne 200.
+PUT /api/v1/tasks/{id} — modifier une tâche, retourne 200.
+DELETE /api/v1/tasks/{id} — supprimer une tâche, retourne 204.
+GET /api/v1/admin/users — liste des utilisateurs, réservé à ROLE_ADMIN, retourne 200.
+Codes de réponse : 200 pour les succès GET et PUT, 201 pour les créations, 204 pour les suppressions, 400 pour les erreurs de validation, 401 quand le token est absent ou invalide, 403 quand l'accès est refusé, 404 quand la ressource est introuvable, 500 pour les erreurs serveur.
+Gestion des erreurs : toutes les erreurs retournent un objet JSON standardisé contenant le timestamp, le status HTTP, le message d'erreur et le chemin de la requête.
+Versioning : par URL avec le préfixe /api/v1/, ce qui permet de faire évoluer l'API sans casser les clients existants.
+
+4. Architecture applicative Spring Boot
+L'architecture respecte le principe de séparation des responsabilités à travers les couches suivantes :
+Le package controller contient les classes qui reçoivent les requêtes HTTP et délèguent au service. Les controllers dépendent uniquement des interfaces de service, ce qui applique le principe d'inversion de dépendance (DIP).
+Le package service/interfaces contient les contrats IAuthService, ITaskService et IUserService. Le package service/impl contient les implémentations AuthServiceImpl, TaskServiceImpl et UserServiceImpl qui contiennent toute la logique métier.
+Le package repository contient les interfaces JPA qui abstraient l'accès à la base de données.
+Le package dto/request contient les objets de requête avec les annotations de validation, et le package dto/response contient les objets de réponse renvoyés au client. Cette séparation évite d'exposer directement les entités.
+Le package mapper contient les interfaces MapStruct qui gèrent les conversions entre entités et DTOs sans logique métier.
+Le package exception contient les exceptions métier spécifiques et le GlobalExceptionHandler qui centralise la gestion des erreurs.
+Le package security contient CustomUserDetails, CustomUserDetailsService, JwtUtils, JwtFilter et SecurityConfig qui gèrent toute la chaîne d'authentification JWT.
+Le package enums centralise les valeurs typées Role, TaskStatus et TaskPriority pour éviter les magic strings.
+Les justifications techniques principales sont : l'utilisation de JWT stateless pour la scalabilité, MapStruct pour les conversions sans logique manuelle, Bean Validation pour la validation des entrées, et le GlobalExceptionHandler pour la cohérence des réponses d'erreur.
+
+QUESTION 2 — REALISATION, QUALITE ET SECURITE
+
+1. Implémentation
+L'authentification est gérée via JWT avec HMAC-SHA256. A l'inscription, le mot de passe est encodé avec BCrypt avant la persistance. A la connexion, Spring Security vérifie les identifiants via le DaoAuthenticationProvider, puis un token JWT est généré et retourné au client. Ce token est ensuite attendu dans l'en-tête Authorization de chaque requête sous la forme Bearer {token}. Le filtre JwtFilter intercepte chaque requête, valide le token et injecte l'authentification dans le SecurityContext.
+Le CRUD des tâches est complet avec création, lecture, mise à jour et suppression. Chaque opération vérifie que la tâche appartient bien à l'utilisateur connecté avant de l'exécuter.
+La validation des données est assurée par les annotations Bean Validation sur les DTOs de requête : @NotBlank, @Email, @Size, @NotNull, @FutureOrPresent. En cas d'erreur, le GlobalExceptionHandler retourne un map détaillé des champs invalides.
+La pagination est implémentée sur toutes les listes via l'objet Pageable de Spring Data, avec un tri par défaut sur createdAt en ordre décroissant.
+2. Tests automatisés
+Trois catégories de tests sont prévues pour atteindre la couverture minimale de 60%.
+Les tests unitaires couvrent les services en isolation, en mockant les repositories et mappers avec Mockito. Par exemple, on vérifie que TaskServiceImpl lance bien une ResourceNotFoundException quand la tâche n'existe pas, ou une UnauthorizedAccessException quand l'utilisateur n'est pas propriétaire.
+Les tests Feature testent les endpoints HTTP complets via MockMvc en simulant des requêtes HTTP et en vérifiant les codes de réponse et le contenu JSON retourné.
+Les tests d'authentification vérifient l'inscription avec un email existant, la connexion avec de mauvais identifiants, et l'accès à un endpoint protégé sans token.
+3. Bonnes pratiques de sécurité
+La validation stricte des entrées est assurée par Bean Validation sur tous les DTOs de requête, ce qui empêche les données malformées d'atteindre la couche service.
+La protection contre les injections SQL est assurée par l'utilisation de Spring Data JPA avec des requêtes paramétrées. Aucune requête SQL native n'est construite par concaténation de chaînes.
+La gestion des rôles est implémentée à deux niveaux : au niveau de la configuration Spring Security avec hasAuthority sur les routes /api/v1/admin/**, et au niveau des méthodes avec @PreAuthorize sur les controllers d'administration.
+La protection XSS est assurée par le fait que l'API retourne uniquement du JSON et n'interprète jamais de contenu HTML. Les données sont toujours sérialisées par Jackson avant d'être renvoyées.
+Le CSRF est désactivé car l'API est stateless et utilise JWT, ce qui rend les attaques CSRF impossibles puisqu'il n'y a pas de session côté serveur.
+Les mots de passe ne sont jamais stockés en clair grâce à BCryptPasswordEncoder avec un facteur de coût par défaut de 10.
+4. Principes de Clean Code
+Les méthodes sont courtes et n'ont qu'une seule responsabilité. Par exemple, dans TaskServiceImpl les méthodes privées findTaskOrThrow et verifyOwnership évitent la duplication du code de récupération et de vérification d'appartenance.
+Le nommage est explicite : les interfaces de service sont préfixées par I (ITaskService), les implémentations sont suffixées par Impl (TaskServiceImpl), les méthodes de mapper sont nommées toEntity et toResponse pour clarifier la direction de la conversion.
+Les commentaires sont pertinents et placés uniquement là où le code ne se documente pas de lui-même, notamment sur les méthodes des interfaces de service pour expliquer les paramètres et les cas d'erreur.
+Il n'y a pas de duplication : la logique de récupération d'une entité et de levée d'exception est factorisée dans des méthodes privées réutilisées par toutes les opérations CRUD.
+
+QUESTION 3 — CONCEPTION DU PIPELINE
+
+1. Analyse et stratégie CI/CD
+La stratégie de branches adoptée est une version simplifiée de GitFlow adaptée au contexte d'un examen avec les branches suivantes :
+La branche main contient le code de production stable. Aucun commit direct n'est autorisé sur cette branche.
+La branche develop est la branche d'intégration principale où toutes les fonctionnalités sont fusionnées avant de partir en production.
+Les branches feature/nom-fonctionnalite sont créées depuis develop pour chaque nouvelle fonctionnalité et fusionnées via merge request après revue.
+Les déclencheurs du pipeline sont les suivants : un push sur develop déclenche le pipeline CI complet (build, tests, analyse, scan de sécurité), un push sur main déclenche en plus le build Docker et le déploiement automatique, et la création d'un tag de version déclenche le build de l'image Docker avec ce tag spécifique.
+Les étapes du pipeline dans l'ordre sont : Build, Lint, Tests unitaires, Analyse SonarQube, Scan de sécurité, Build Docker, Déploiement.
+2. Définition des étapes CI
+Etape 1 - Build : compilation du projet Maven avec mvn clean package -DskipTests pour vérifier que le code compile sans erreur.
+Etape 2 - Lint : vérification du style de code avec Checkstyle pour s'assurer que les conventions de nommage et de formatage sont respectées.
+Etape 3 - Tests unitaires : exécution de mvn test avec génération du rapport de couverture JaCoCo. Le pipeline échoue si la couverture est inférieure à 60%.
+Etape 4 - Analyse SonarQube : envoi des résultats de couverture et analyse statique du code vers le serveur SonarQube. Le pipeline échoue si la Quality Gate n'est pas satisfaite.
+Etape 5 - Scan de sécurité : scan des dépendances Maven avec OWASP Dependency Check pour détecter les CVE connues, et détection de secrets dans le code avec l'outil GitLeaks.
+Etape 6 - Build Docker : construction de l'image Docker multi-stage avec tag automatique basé sur le hash du commit ou le numéro de tag Git, puis push vers le registry Docker Hub ou GitHub Container Registry.
+Etape 7 - Déploiement : connexion au serveur cible via SSH et exécution de docker-compose pull suivi de docker-compose up -d pour mettre à jour le service avec la nouvelle image.
+
+
+3. Schéma conceptuel
+Push / Merge Request
+        |
+        v
+  [1. Build Maven]
+        |
+        v
+  [2. Lint / Checkstyle]
+        |
+        v
+  [3. Tests + Couverture JaCoCo]
+        |
+        v
+  [4. Analyse SonarQube] -----> Quality Gate echouee --> Pipeline stoppe
+        |
+        v
+  [5. Scan securite OWASP + GitLeaks]
+        |
+        v (uniquement sur main ou tag)
+  [6. Build image Docker + Push registry]
+        |
+        v
+  [7. Deploiement docker-compose sur serveur]
+        |
+        v
+  Application mise a jour en production
+
+QUESTION 4 — IMPLEMENTATION DU PIPELINE
+Voici le fichier GitHub Actions complet :
+yamlname: CI/CD Pipeline - TaskManager
+
+on:
+  push:
+    branches: [ main, develop ]
+    tags: [ 'v*.*.*' ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/taskmanager
+  JAVA_VERSION: '17'
+
+jobs:
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests -B
+
+      - name: Upload JAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-jar
+          path: target/*.jar
+
+  lint:
+    name: Lint / Checkstyle
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Run Checkstyle
+        run: mvn checkstyle:check -B
+
+  test:
+    name: Tests unitaires et couverture
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Run tests with JaCoCo
+        run: mvn test jacoco:report -B
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: target/site/jacoco/
+
+      - name: Check coverage threshold
+        run: mvn jacoco:check -B
+
+  sonarqube:
+    name: Analyse SonarQube
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Run SonarQube analysis
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: |
+          mvn verify sonar:sonar \
+            -Dsonar.projectKey=taskmanager \
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }} \
+            -B
+
+  security-scan:
+    name: Scan de securite DevSecOps
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: maven
+
+      - name: OWASP Dependency Check
+        run: |
+          mvn dependency-check:check -B
+        continue-on-error: true
+
+      - name: Upload OWASP report
+        uses: actions/upload-artifact@v4
+        with:
+          name: owasp-report
+          path: target/dependency-check-report.html
+
+      - name: GitLeaks - Detection de secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-build:
+    name: Build et Push image Docker
+    runs-on: ubuntu-latest
+    needs: [ sonarqube, security-scan ]
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract tag
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=sha,prefix=commit-
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Scan image Trivy
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}:latest
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  deploy:
+    name: Deploiement production
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            cd /opt/taskmanager
+            docker-compose pull
+            docker-compose up -d --remove-orphans
+            docker image prune -f
+            echo "Deploiement termine avec succes"
+
+QUESTION 5 — DEPLOIEMENT AUTOMATIQUE
+Le build de l'image Docker est automatisé dans le job docker-build du pipeline. Le tag est généré automatiquement à partir du hash du commit avec le préfixe commit- pour les déploiements sur main, et à partir du tag Git pour les releases versionnées. L'image latest est mise à jour à chaque merge sur main.
+Le déploiement se fait via SSH sur le serveur de production. La commande docker-compose pull récupère la nouvelle image depuis le registry, puis docker-compose up -d redémarre le service avec la nouvelle version sans interruption. L'option --remove-orphans nettoie les anciens conteneurs inutilisés.
+Le docker-compose.yml de production est le suivant :
+yamlversion: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: taskmanager-db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD}
+      MYSQL_DATABASE: taskmanager_db
+    volumes:
+      - mysql_data:/var/lib/mysql
+    restart: always
+    networks:
+      - taskmanager-network
+
+  app:
+    image: votre-username/taskmanager:latest
+    container_name: taskmanager-app
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/taskmanager_db?useSSL=false&serverTimezone=UTC
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD}
+      APP_JWT_SECRET: ${JWT_SECRET}
+      APP_JWT_EXPIRATION: 86400000
+    depends_on:
+      - db
+    restart: always
+    networks:
+      - taskmanager-network
+
+volumes:
+  mysql_data:
+
+networks:
+  taskmanager-network:
+    driver: bridge
+
+QUESTION 6 — OPTIMISATION ET CLEAN CODE
+Modularité et structure
+Le projet respecte une architecture en couches stricte où chaque package a une responsabilité unique. Les controllers ne contiennent aucune logique métier, les services ne contiennent aucune logique de présentation, et les mappers ne contiennent aucune logique ni métier ni présentation. Cette séparation rend chaque couche testable indépendamment et modifiable sans impacter les autres.
+Optimisation du pipeline
+La mise en cache des dépendances Maven est activée avec cache: maven dans l'action setup-java. Cela évite de retélécharger toutes les dépendances à chaque exécution et réduit significativement le temps d'exécution.
+La parallélisation est mise en place avec les jobs lint, test et security-scan qui s'exécutent en parallèle après le job build. Seul le job sonarqube attend la fin des tests pour récupérer le rapport de couverture.
+Le build Docker n'est déclenché que sur main et sur les tags, ce qui évite de construire une image inutilement sur chaque push de développement.
+Guide d'utilisation
+Pour exécuter le pipeline, il suffit de pousser du code sur develop ou main. Le pipeline se déclenche automatiquement et son statut est visible dans l'onglet Actions du dépôt GitHub.
+Pour corriger un échec, il faut consulter les logs du job en échec dans GitHub Actions. Chaque étape est clairement nommée et les logs indiquent précisément la commande qui a échoué et le message d'erreur.
+Pour interpréter les rapports SonarQube, il faut se connecter au tableau de bord SonarQube et consulter les sections Bugs, Vulnerabilities, Code Smells et Coverage. Les issues sont classées par sévérité et chacune pointe vers la ligne de code concernée avec une explication.
+Pour corriger une vulnérabilité détectée par OWASP Dependency Check ou Trivy, il faut identifier la dépendance concernée dans le rapport, mettre à jour sa version dans le pom.xml vers une version qui corrige la CVE, puis pousser le correctif
