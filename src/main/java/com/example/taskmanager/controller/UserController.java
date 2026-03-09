@@ -15,20 +15,44 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
-// Gère les requêtes HTTP liées au profil utilisateur
+/**
+ * Contrôleur REST responsable de la gestion du profil utilisateur.
+ *
+ * <p>Ce contrôleur expose des endpoints permettant à l'utilisateur
+ * authentifié de consulter ses informations personnelles.
+ *
+ * <p>Toutes les routes de ce contrôleur sont protégées par JWT. L'utilisateur
+ * doit donc fournir un token valide dans l'en-tête Authorization.
+ */
 @Tag(name = "Utilisateurs", description = "Gestion du profil utilisateur")
 @SecurityRequirement(name = "Bearer Token")
 @RestController
 @RequestMapping("/api/users")
 public class UserController {
 
+    /**
+     * Service chargé de la gestion des utilisateurs.
+     */
     private final UserService userService;
 
+    /**
+     * Constructeur permettant l'injection du service utilisateur.
+     *
+     * @param userService service pour la gestion des utilisateurs
+     */
     public UserController(UserService userService) {
         this.userService = userService;
     }
 
-    // GET /api/users/me → Retourne le profil de l'utilisateur connecté
+    /**
+     * Retourne le profil complet de l'utilisateur authentifié.
+     *
+     * <p>Récupère l'utilisateur connecté grâce au token JWT, puis
+     * charge les informations depuis la base de données.
+     *
+     * @param userDetails informations de l'utilisateur connecté extraites du JWT
+     * @return réponse HTTP contenant les informations de l'utilisateur
+     */
     @Operation(
             summary = "Récupérer le profil connecté",
             description = "Retourne les informations de l'utilisateur authentifié"
@@ -48,10 +72,10 @@ public class UserController {
     public ResponseEntity<ApiResponse<User>> getCurrentUser(
             @AuthenticationPrincipal UserDetails userDetails) {
 
-        // Récupère l'email depuis le token JWT
+        // Récupération de l'email depuis le JWT
         String email = userDetails.getUsername();
 
-        // Charge le profil complet depuis la base de données
+        // Chargement des informations complètes de l'utilisateur
         User user = userService.findByEmail(email);
 
         return ResponseEntity
